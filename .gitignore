@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Large model files and generated outputs
+*.joblib
+*.pkl
+*.png
+*.html
+*.csv
+leakage_report.txt
