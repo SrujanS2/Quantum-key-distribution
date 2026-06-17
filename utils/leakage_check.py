@@ -18,10 +18,12 @@ from sklearn.metrics import classification_report, f1_score, accuracy_score, pre
 from sklearn.model_selection import train_test_split
 import joblib
 import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent.parent / "dataset"))
 
 DATA_LOADER = "data_loader"
 THRESH_F1 = 0.95
-OUTPATH = Path("leakage_report.txt")
+OUTPATH = Path(__file__).resolve().parent / "leakage_report.txt"
 
 def main():
     # import loader

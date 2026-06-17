@@ -1,12 +1,17 @@
 """
-qkd_server.py — Session-based QKD Authentication
+qkd_server_email.py — Session-based QKD Authentication with Email Verification
 - Devices must authenticate with a QKD code upon connection.
+- The server prompts the administrator for the user's email address upon connection request.
+- The QKD code is sent to the provided email address.
 - Once authenticated, messages are exchanged freely (secure session).
-- Continuous QKD monitoring (ML + Rule) still runs in background for logging/dashboard.
-- Aggressive Attack Mode supported.
 """
 
 import os
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent.parent / "models"))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "utils"))
+
 import time
 import random
 import hashlib
@@ -19,14 +24,44 @@ from flask import Flask, render_template_string, jsonify, request
 from qkd_xai import QKDExplainer
 from flask_socketio import SocketIO
 from crypto_utils import bytes_to_bits, otp_encrypt, otp_decrypt
+from email_sender import send_email
 
 # ---------- config ----------
 HOST = "0.0.0.0"
 PORT = 5000
-DATA_DIR = "data"
-CSV_LOG = "qkd_logs.csv"
+DATA_DIR = str(Path(__file__).resolve().parent.parent / "dataset" / "data")
+CSV_LOG = str(Path(__file__).resolve().parent.parent / "dataset" / "qkd_logs.csv")
 REQUIRED = ["QBER", "SignalIntensity", "TimingJitter", "DetectorTemp"]
-MODEL_PATH = "qkd_rf_model.joblib"
+MODEL_PATH = str(Path(__file__).resolve().parent.parent / "models" / "qkd_rf_model.joblib")
+
+# ---------- EMAIL CONFIG ----------
+# 1. Try to get from Environment Variables (Best Practice)
+# 2. Fallback to these hardcoded values (Edit them if you don't want to use Env Vars)
+SMTP_CONFIG = {
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "user": os.getenv("QKD_SMTP_USER", "your_email@gmail.com"),
+    "password": os.getenv("QKD_SMTP_PASS", "your_app_password")
+}
+
+# Warn if using placeholders, and ask for input
+if SMTP_CONFIG["user"] == "your_email@gmail.com" or SMTP_CONFIG["password"] == "your_app_password":
+    print("\n[SETUP] Email credentials not configured in code or environment variables.")
+    print("To send QKD codes via email, please enter your Sender Email details now.")
+    print("(For Gmail, you must use an 'App Password': https://myaccount.google.com/apppasswords)\n")
+    
+    try:
+        entered_email = input("Sender Email (e.g. mymail@gmail.com): ").strip()
+        if entered_email:
+            SMTP_CONFIG["user"] = entered_email
+            
+        entered_pass = input("Sender App Password: ").strip()
+        if entered_pass:
+            SMTP_CONFIG["password"] = entered_pass
+    except Exception:
+        pass
+    
+    print(f"[SETUP] Using Sender: {SMTP_CONFIG['user']}\n")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -290,11 +325,9 @@ DASH_HTML = """
                 <th>FROM</th>
                 <th>TO</th>
                 <th>STATUS</th>
-                <th>P(ATTACK)</th>
-                <th>REASON</th>
-                <th>QBER</th>
-                <th>SIGNAL</th>
-                <th>MESSAGE</th>
+                <th>LABEL</th>
+                <th>THREAT ANALYSIS (XAI)</th>
+                <th>ENCRYPTED</th>
             </tr>
         </thead>
         <tbody id="log-body">
@@ -325,17 +358,33 @@ DASH_HTML = """
                     const cls = isAttack ? 'attack' : 'safe';
                     const badge = isAttack ? '<span class="badge badge-danger">ATTACK</span>' : '<span class="badge badge-safe">SECURE</span>';
                     
+                    let xaiHtml = '<div style="display:flex; flex-direction:column; gap:4px;">';
+                    if (r.xai_data && r.xai_data.length > 0) {
+                        r.xai_data.slice(0, 2).forEach(item => {
+                            const color = item.is_risk_factor ? 'var(--accent-danger)' : 'var(--accent-safe)';
+                            const width = Math.max(item.contribution_percent, 10);
+                            xaiHtml += `
+                                <div style="display:flex; align-items:center; font-size:0.75em;">
+                                    <span style="width:100px; opacity:0.8;">${item.name}</span>
+                                    <div style="flex:1; height:6px; background:#333; border-radius:3px; overflow:hidden;">
+                                        <div style="width:${width}%; height:100%; background:${color};"></div>
+                                    </div>
+                                    <span style="width:35px; text-align:right; margin-left:5px;">${item.contribution_percent.toFixed(0)}%</span>
+                                </div>
+                            `;
+                        });
+                    } else {
+                        xaiHtml = '<span style="color:#666; font-size:0.8em;">No Analysis</span>';
+                    }
+                    xaiHtml += '</div>';
+
                     html += `<tr class="${cls}">
                         <td>${r.timestamp.split(' ')[1]}</td>
                         <td>${r.frm}</td>
                         <td>${r.to}</td>
                         <td>${badge}</td>
-                        <td>${(r.p_attack * 100).toFixed(1)}%</td>
-                        <td>${(r.p_attack * 100).toFixed(1)}%</td>
-                        <td style="white-space: pre-wrap;">${r.detection_reason}</td>
-                        <td>${r.QBER.toFixed(5)}</td>
-                        <td>${r.QBER.toFixed(5)}</td>
-                        <td>${r.SignalIntensity.toFixed(2)}</td>
+                        <td>${r.label}</td>
+                        <td>${xaiHtml}</td>
                         <td>${r.plaintext}</td>
                     </tr>`;
                 });
@@ -387,6 +436,8 @@ def on_connect():
 @socketio.on("register")
 def on_register(payload):
     dev = payload.get("device_id")
+    user_email = payload.get("email")
+    
     if not dev:
         return
     
@@ -406,11 +457,36 @@ def on_register(payload):
     code = derive_quantum_code(row, dev)
     pending_auth[request.sid] = {'code': code, 'row': row, 'device': dev}
     
-    # Print Code to Server Console
+    # Send Email
     print(f"\n[AUTH] Device {dev} requesting connection.", flush=True)
-    print(f"       QKD AUTH CODE: {code}", flush=True)
-    print(f"       (Enter this code on Device {dev} to connect)\n", flush=True)
     
+    target_email = user_email
+    
+    # Fallback if client didn't send email (backward compatibility or manual override)
+    if not target_email:
+        print(f"       Client did not provide email. Please enter manually:", flush=True)
+        try:
+            target_email = input(f"Email for {dev}: ").strip()
+        except Exception:
+            pass
+
+    if target_email:
+        print(f"       Sending QKD Code to {target_email}...", flush=True)
+        try:
+            send_email(
+                subject=f"QKD Authentication Code for Device {dev}",
+                body=f"Your QKD Authentication Code is: {code}\n\nPlease enter this code in your device terminal.",
+                sender=SMTP_CONFIG["user"],
+                recipient=target_email,
+                smtp_config=SMTP_CONFIG
+            )
+            print(f"       Code sent to {target_email}.\n", flush=True)
+        except Exception as e:
+            print(f"       Error sending email: {e}")
+            print(f"       Fallback: QKD AUTH CODE: {code}")
+    else:
+         print(f"       No email provided. Fallback: QKD AUTH CODE: {code}")
+
     socketio.emit("auth_challenge", {"device_id": dev}, room=request.sid)
 
 @socketio.on("auth_response")
@@ -469,11 +545,23 @@ def decide_label_and_reason(row):
     p_attack = 0.0
     reason = "safe"
     shap_details = ""
+    xai_data = []
 
     if ATTACK_MODE:
         # Synthetic XAI for demo consistency
-        fake_shap = " due to Quantum Error Rate (+0.95 risk), Timing Jitter (+0.40 risk)"
-        return 1, 0.995, "forced_aggressive_attack", fake_shap
+        fake_shap = " due to Quantum Error Rate (risk), Signal Strength (risk)"
+        
+        # Attack Scenario: 
+        # 1. High QBER (> 90%) -> Risk Factor = True
+        # 2. Low Signal Strength (< 10%) -> Risk Factor = True (Low signal is bad)
+        v_qber = random.randint(90, 99)
+        v_signal = random.randint(1, 10)
+        
+        fake_xai = [
+            {"name": "Quantum Error Rate", "contribution_percent": float(v_qber), "is_risk_factor": True},
+            {"name": "Signal Strength", "contribution_percent": float(v_signal), "is_risk_factor": True} 
+        ]
+        return 1, 0.995, "forced_aggressive_attack", fake_shap, fake_xai
 
     rule_flag = row["QBER"] > QBER_THRESHOLD
 
@@ -486,6 +574,7 @@ def decide_label_and_reason(row):
             # XAI Explanation
             if explainer:
                 shap_details = explainer.explain(X)
+                xai_data = explainer.explain_structured(X)
 
         except Exception:
             p_attack = 0.0
@@ -499,8 +588,41 @@ def decide_label_and_reason(row):
     else:
         label = 0; reason = f"safe p={p_attack:.3f}"
     
-    # Ensure we ALWAYS return 4 values
-    return (label, round(p_attack,3), reason, shap_details)
+    # --- FORCE XAI PERCENTAGES LOGIC ---
+    # User Request:
+    # If Secure (Label 0) -> Signal Strength > 85% (Good)
+    # If Attack (Label 1) -> Quantum Error Rate > 90% (Bad) AND Signal Strength < 10% (Bad)
+    # Values vary every time.
+
+    final_xai = []
+    
+    if label == 1:
+        # Attack Scenario: 
+        # 1. High QBER (> 90%) -> Risk Factor = True
+        # 2. Low Signal Strength (< 10%) -> Risk Factor = True (Low signal is bad)
+        # Randomize values every time this function is called
+        v_qber = random.randint(90, 99)
+        v_signal = random.randint(1, 10)
+        
+        final_xai = [
+            {"name": "Quantum Error Rate", "contribution_percent": float(v_qber), "is_risk_factor": True},
+            {"name": "Signal Strength", "contribution_percent": float(v_signal), "is_risk_factor": True} 
+        ]
+    else:
+        # Secure Scenario:
+        # 1. High Signal Strength (> 85%) -> Risk Factor = False (High signal is good)
+        # 2. Low QBER (< 5%) -> Risk Factor = False
+        # Randomize values every time this function is called
+        v_signal = random.randint(85, 99)
+        v_qber = random.randint(1, 5)
+        
+        final_xai = [
+            {"name": "Signal Strength", "contribution_percent": float(v_signal), "is_risk_factor": False},
+            {"name": "Quantum Error Rate", "contribution_percent": float(v_qber), "is_risk_factor": False}
+        ]
+
+    # Ensure we ALWAYS return 5 values
+    return (label, round(p_attack,3), reason, shap_details, final_xai)
 
 @socketio.on("send_message")
 def on_send_message(payload):
@@ -523,19 +645,19 @@ def on_send_message(payload):
         features = {k: float(row[k]) for k in REQUIRED}
         
         # decide label using ML+rule
-        # decide label using ML+rule
         try:
-            # Unpack 4 values: label, p_attack, base_reason, shap_details
+            # Unpack 5 values: label, p_attack, base_reason, shap_details, xai_data
             ret = decide_label_and_reason(row)
-            if len(ret) == 4:
-                label, p_attack, base_reason, shap_details = ret
+            if len(ret) == 5:
+                label, p_attack, base_reason, shap_details, xai_data = ret
             else:
                 # Fallback if something weird happens
                 label, p_attack, base_reason = ret[:3]
                 shap_details = ""
+                xai_data = []
         except ValueError:
              # Absolute fallback
-             label = 0; p_attack = 0.0; base_reason = "error_fallback"; shap_details = ""
+             label = 0; p_attack = 0.0; base_reason = "error_fallback"; shap_details = ""; xai_data = []
         
         # --- Construct Professional Narrative ---
         # Structure: [Status] [Flow] [Analysis]
@@ -574,10 +696,6 @@ def on_send_message(payload):
 
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Handle Attack -> Alert but still deliver (as per reverted logic, or we can block? 
-        # User said "remove generating qkd code for every message", didn't explicitly say "restore blocking".
-        # But usually attack = bad. Let's Log it clearly.
-        
         print("\n======================")
         print(f"Message From {frm} → {to}")
         print("----------------------")
@@ -594,18 +712,22 @@ def on_send_message(payload):
         print("======================\n")
 
         # dashboard + csv
+        # Generate simulated encrypted text (5 chars) for dashboard display
+        chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&"
+        encrypted_preview = "".join(random.choice(chars) for _ in range(5))
+
         dashboard_log.append({
             "timestamp": ts, "frm": frm, "to": to, "label": label, "p_attack": p_attack, "detection_reason": reason,
             "QBER": features['QBER'], "SignalIntensity": features['SignalIntensity'],
             "TimingJitter": features['TimingJitter'], "DetectorTemp": features['DetectorTemp'],
-            "code": "SESSION_AUTH", "plaintext": text
+            "code": "SESSION_AUTH", "plaintext": encrypted_preview,
+            "xai_data": xai_data
         })
         log_csv([ts, frm, to, label, p_attack, reason, features['QBER'], features['SignalIntensity'], features['TimingJitter'], features['DetectorTemp'], "SESSION_AUTH", text])
 
         # Security Response
         if label == 1:
             # 1. Broadcast Alert (to Eavesdropper/Admin)
-            # IMPORTANT: Must use broadcast=True to reach Eavesdropper, otherwise it only goes to sender (A)
             alert = {
                 "msg_id": "ALERT", "from": frm, "to": to,
                 "label": label, "p_attack": p_attack, "reason": base_reason,
@@ -613,7 +735,7 @@ def on_send_message(payload):
                 "QBER": features['QBER'], "SignalIntensity": features['SignalIntensity'],
                 "TimingJitter": features['TimingJitter'], "DetectorTemp": features['DetectorTemp']
             }
-            socketio.emit("alert_attack", alert, broadcast=True)
+            socketio.emit("alert_attack", alert) # broadcast=True removed (default behavior or handled by room)
 
             # 2. Disconnect Devices
             print(f"\n[SECURITY] ⛔ BLOCKING CONNECTION ⛔")
@@ -623,7 +745,6 @@ def on_send_message(payload):
             for device_name in [frm, to]:
                 if device_name in connected:
                     sid = connected[device_name]['sid']
-                    # Send the full narrative as the reason so the client prints it nicely
                     socketio.emit("force_disconnect", {"reason": "EAVESDROPPING_DETECTED", "details": narrative}, room=sid)
             
             # 3. Abort Delivery
@@ -643,6 +764,6 @@ def health():
     return {"ok": True, "connected": list(connected.keys())}
 
 if __name__ == "__main__":
-    print("\nQKD SERVER (SESSION AUTH) STARTED\n")
+    print("\nQKD SERVER (EMAIL AUTH) STARTED\n")
     print("Dashboard -> http://localhost:5000/dashboard")
     socketio.run(app, host=HOST, port=PORT)

@@ -16,10 +16,10 @@ import matplotlib.pyplot as plt
 import ast
 import traceback
 
-DATA_DIR = Path("data")
+DATA_DIR = Path(__file__).resolve().parent / "data"
 CSV_PATH = Path("/mnt/data/key.csv") if Path("/mnt/data/key.csv").exists() else DATA_DIR / "key.csv"
-LOG_CSV = DATA_DIR / "device_chat_full_log.csv"
-MODEL_PATH = Path("qkd_rf_model.joblib")
+LOG_CSV = Path(__file__).resolve().parent / "qkd_logs.csv" if (Path(__file__).resolve().parent / "qkd_logs.csv").exists() else Path(__file__).resolve().parent.parent / "qkd_logs.csv"
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "qkd_rf_model.joblib"
 
 FEATURES = ["QBER","SignalIntensity","TimingJitter","DetectorTemp"]
 

@@ -8,6 +8,10 @@ QKD SERVER with Dashboard + CSV logging
 """
 
 import os
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent.parent / "utils"))
+
 import time
 import random
 import hashlib
@@ -23,8 +27,8 @@ from crypto_utils import bytes_to_bits, otp_encrypt
 # config
 HOST = "0.0.0.0"
 PORT = 5000
-DATA_DIR = "data"
-CSV_LOG = "qkd_logs.csv"
+DATA_DIR = str(Path(__file__).resolve().parent.parent / "dataset" / "data")
+CSV_LOG = str(Path(__file__).resolve().parent.parent / "dataset" / "qkd_logs.csv")
 REQUIRED = ["QBER", "SignalIntensity", "TimingJitter", "DetectorTemp"]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -38,7 +42,7 @@ df = pd.concat(dfs, ignore_index=True).fillna(0.0)
 print(f"[SERVER] Loaded {len(df)} rows from {len(files)} CSV(s)")
 
 # optional: try to load model (not required for forced-safe flow)
-MODEL_PATH = "qkd_rf_model.joblib"
+MODEL_PATH = str(Path(__file__).resolve().parent.parent / "models" / "qkd_rf_model.joblib")
 clf = None
 if os.path.exists(MODEL_PATH):
     try:

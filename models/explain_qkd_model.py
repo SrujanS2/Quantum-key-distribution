@@ -9,10 +9,11 @@ Saves:
 import joblib, numpy as np, pandas as pd, shap, matplotlib.pyplot as plt
 from pathlib import Path
 import sys
+sys.path.append(str(Path(__file__).resolve().parent.parent / "dataset"))
 
-MODEL_PATH = "qkd_rf_model.joblib"
-OUTPUT_SUMMARY = "shap_summary.png"
-OUTPUT_FORCE = "shap_force_sample.html"
+MODEL_PATH = str(Path(__file__).resolve().parent / "qkd_rf_model.joblib")
+OUTPUT_SUMMARY = str(Path(__file__).resolve().parent / "shap_summary.png")
+OUTPUT_FORCE = str(Path(__file__).resolve().parent / "shap_force_sample.html")
 
 # sample sizes (reduce if RAM limited)
 BG_SIZE = 2000
@@ -34,7 +35,7 @@ def load_data():
         return df
     except Exception as e:
         # try raw CSV
-        p = Path("data")/"key.csv"
+        p = Path(__file__).resolve().parent.parent / "dataset" / "data" / "key.csv"
         if p.exists():
             df = pd.read_csv(p, dtype=object)
             print("Loaded raw CSV:", df.shape)

@@ -51,9 +51,9 @@ def otp_decrypt(ct_bytes: bytes, key_bits):
     return otp_encrypt(ct_bytes, key_bits)
 
 # ---- dataset-driven server ----
-DATA_DIR = Path("data")
+DATA_DIR = Path(__file__).resolve().parent.parent / "dataset" / "data"
 CSV_PATH = DATA_DIR / "key.csv"
-MODEL_PATH = Path("qkd_rf_model.joblib")
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "qkd_rf_model.joblib"
 LOG_CSV = DATA_DIR / "device_chat_dataset_mode.csv"
 
 HOST = "0.0.0.0"

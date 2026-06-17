@@ -11,8 +11,8 @@ import joblib
 from sklearn.ensemble import RandomForestClassifier
 
 REQUIRED = ["QBER", "SignalIntensity", "TimingJitter", "DetectorTemp"]
-DATA_DIR = "data"
-MODEL_PATH = "qkd_rf_model.joblib"
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dataset", "data")
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qkd_rf_model.joblib")
 
 def load_all():
     if not os.path.isdir(DATA_DIR):
