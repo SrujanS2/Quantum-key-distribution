@@ -1,5 +1,3 @@
-Now let me get the file listing:Now let me get a sample of key Python files to understand the project better:Based on my analysis of all the files in your repository, here's a comprehensive README summary:
-
 
 **Project Overview**
 This is a **Quantum Key Distribution (QKD) Security System** with eavesdropping detection, machine learning-based threat analysis, and explainable AI (XAI) capabilities. It implements secure message passing between clients with quantum-inspired key distribution protocols.
